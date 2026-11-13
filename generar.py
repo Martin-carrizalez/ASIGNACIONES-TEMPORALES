@@ -91,6 +91,56 @@ def poner_fecha(doc, fecha: str):
         return
     raise RuntimeError("No encontre el renglon 'Fecha:' en la plantilla.")
 
+def _es_blanco(el) -> bool:
+    return el.tag == qn("w:p") and not "".join(el.itertext()).strip()
+
+def _fijar_al_flujo(tabla):
+    """La tabla de la firma del solicitante es 'flotante' en la plantilla: no
+    ocupa lugar propio y los renglones en blanco de abajo le reservaban el
+    espacio. Se fija al flujo normal (centrada, como estaba) para que el
+    espacio sea predecible y se pueda recortar el relleno sin que el texto de
+    abajo se le suba encima."""
+    tblPr = tabla._tbl.tblPr
+    flotante = tblPr.find(qn("w:tblpPr"))
+    if flotante is not None:
+        tblPr.remove(flotante)
+    if tblPr.find(qn("w:jc")) is None:
+        jc = OxmlElement("w:jc")
+        jc.set(qn("w:val"), "center")
+        tblPr.append(jc)
+
+def _quitar_blanco_junto_a(cuerpo, texto, despues=False):
+    """Quita UN renglon en blanco pegado (antes o despues) al parrafo que
+    contiene texto. Si ahi no hay renglon en blanco, no hace nada."""
+    for i, c in enumerate(cuerpo):
+        if c.tag == qn("w:p") and texto in "".join(c.itertext()):
+            j = i + 1 if despues else i - 1
+            if 0 <= j < len(cuerpo) and _es_blanco(cuerpo[j]):
+                cuerpo[j].getparent().remove(cuerpo[j])
+            return
+
+def compactar(doc):
+    """La plantilla original ocupa dos hojas: la nota del pie cae sola en la
+    segunda. Para que todo quepa en una hoja se fija la tabla del solicitante y
+    se recortan renglones en blanco que solo eran relleno. El espacio donde se
+    firma no se toca:
+      - entre la firma del solicitante y 'Libera el recurso' habia 5: queda 1
+      - el que estaba despues del titulo
+      - el que estaba entre 'Es importante mencionar...' y 'Atentamente'"""
+    _fijar_al_flujo(doc.tables[2])
+    cuerpo = list(doc.element.body.iterchildren())
+    tablas = [i for i, c in enumerate(cuerpo) if c.tag == qn("w:tbl")]
+    hueco = []
+    for c in cuerpo[tablas[2] + 1:]:
+        if "Libera el recurso" in "".join(c.itertext()):
+            break
+        if _es_blanco(c):
+            hueco.append(c)
+    for c in hueco[1:]:
+        c.getparent().remove(c)
+    _quitar_blanco_junto_a(cuerpo, "Cambio de Adscripción", despues=True)
+    _quitar_blanco_junto_a(cuerpo, "Atentamente")
+
 def _casillas(doc) -> dict:
     """Las cuatro casillas redondeadas, por nombre. Son figuras con cuadro de texto
     y aparecen en la plantilla en este orden: la figura 0 es el letrero 'Datos del
@@ -130,6 +180,7 @@ def generar(emp, destino, fecha=None):
     """destino: ruta en disco o buffer en memoria. fecha: texto que va en 'Fecha:';
     si no se da, la de hoy."""
     doc = Document(str(PLANTILLA))
+    compactar(doc)
     poner_fecha(doc, fecha or fecha_larga())
 
     t_datos, t_centros, t_solicitante, t_firmas = doc.tables[:4]

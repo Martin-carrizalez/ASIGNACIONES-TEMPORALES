@@ -22,10 +22,12 @@ import datos
 import generar
 import respuestas
 
-LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.png"
+LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.jpg"
 TITULO = "Asignación temporal"
 SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"
+# Desde cuando regresa a su centro de origen quien decide no continuar.
+INICIO_PERIODO = "enero de 2027"
 
 st.set_page_config(page_title=f"{TITULO} · {SUBTITULO}", page_icon="📄",
                    layout="centered", initial_sidebar_state="auto")   # "auto": abierta en computadora, cerrada en celular
@@ -135,7 +137,8 @@ def barra_lateral():
         st.divider()
         st.markdown("**Es de libre elección**")
         st.caption(f"Nadie está obligado a continuar en la {AREA}. "
-                   "Si decides no continuar, tu adscripción no se mueve.")
+                   f"Si decides no continuar, a partir de {INICIO_PERIODO} regresas "
+                   "a tu centro de trabajo de origen.")
         st.divider()
         st.caption("¿Un dato de nómina no coincide? No lo corrijas por tu cuenta: "
                    "repórtalo con el botón «Hay un error en mis datos».")
@@ -233,8 +236,17 @@ def mover_pantalla(destino=None):
 # persona que use el mismo equipo no vea lo que escribio la anterior.
 _CAMPOS_SESION = ("rfc", "nom_", "cor_", "tel_", "obs_", "confirmar_")
 
+def texto_declina(emp) -> str:
+    """Lo que se le dice a quien no continua: a donde y desde cuando se presenta.
+    El origen es su centro de trabajo actual y su titular sale del directorio."""
+    origen = f"**{emp.ct_actual_nombre}** ({emp.ct_actual_clave})"
+    if emp.libera.titular:
+        origen += f", a cargo de **{emp.libera.titular}**"
+    return (f"No deseaste continuar en la {AREA}. A partir de **{INICIO_PERIODO}** "
+            f"deberás presentarte en tu centro de trabajo de origen: {origen}.")
+
+
 MENSAJE_FINAL = {
-    "declina": "Quedó registrado que no deseas continuar. Tu adscripción no se mueve.",
     "error": "Tu observación quedó registrada. Debes esperar la respuesta de Recursos "
              f"Humanos de la {AREA}: cuando la solvente, vuelve a entrar con tu RFC para "
              "confirmar tus datos y descargar tu formato.",
@@ -263,7 +275,7 @@ def _limpiar_si_toca():
         st.session_state["rfc"] = ""
 
 
-def registrar(store, base, decision):
+def registrar(store, base, decision, emp):
     """Guarda la respuesta, salvo que la solicitud ya este cerrada: cubre el doble
     clic y el caso de tener la app abierta en dos pestañas.
 
@@ -276,15 +288,15 @@ def registrar(store, base, decision):
         store.guardar({**base, "decision": decision})
     if decision == "acepta":
         st.rerun()                  # su vista ya se coloca sola en el aviso
-    volver_al_inicio(MENSAJE_FINAL[decision])
+    volver_al_inicio(texto_declina(emp) if decision == "declina" else MENSAJE_FINAL[decision])
 
 
 def mostrar_cerrada(emp, resp):
     """Solicitud ya aceptada o declinada: solo lectura. No hay forma de editar,
     volver a contestar ni cambiar de decision desde la app."""
     if resp["decision"] == "declina":
-        st.info(f"El {resp['fecha_hora']} registraste que **no deseas continuar** en la "
-                f"{AREA}. Tu respuesta quedó registrada y ya no se puede modificar.")
+        st.info(f"{texto_declina(emp)}\n\nRegistraste esta decisión el {resp['fecha_hora']} "
+                "y ya no se puede modificar.")
     else:
         # Aviso y boton primero, y la pantalla se coloca ahi: tanto al aceptar como
         # cuando la persona regresa a reimprimir. El PDF sale siempre con los datos
@@ -353,31 +365,34 @@ def mostrar_solicitud(emp, store):
     with c1:
         if st.button("✅ Mis datos son correctos y acepto la asignación",
                      type="primary", use_container_width=True, key=f"ok_{emp.n}"):
-            registrar(store, base, "acepta")
+            registrar(store, base, "acepta", emp)
     with c2:
         if st.button("✏️ Hay un error en mis datos",
                      use_container_width=True, key=f"err_{emp.n}"):
             if not observaciones.strip():
                 st.error("Escribe en observaciones cuál es el dato equivocado.")
             else:
-                registrar(store, base, "error")
+                registrar(store, base, "error", emp)
 
     st.divider()
     st.caption(
         f"Continuar en la {AREA} es de libre elección: nadie está obligado. "
-        "Si decides no continuar, tu adscripción no se mueve.")
+        f"Si decides no continuar, a partir de {INICIO_PERIODO} regresas a tu centro "
+        "de trabajo de origen.")
 
     # Declinar es definitivo, por eso va en dos pasos.
     if st.session_state.get(f"confirmar_{emp.n}"):
         st.warning(
             f"¿Confirmas que **no deseas continuar** en la {AREA}? "
-            "Con esto no se tramita tu asignación temporal y no podrás cambiarlo aquí.")
+            "Con esto no se tramita tu asignación temporal, a partir de "
+            f"{INICIO_PERIODO} regresas a tu centro de trabajo de origen "
+            f"(**{emp.ct_actual_nombre}**) y no podrás cambiarlo aquí.")
         d1, d2 = st.columns(2)
         with d1:
             if st.button("Sí, confirmo que no continúo",
                          use_container_width=True, key=f"condec_{emp.n}"):
                 st.session_state[f"confirmar_{emp.n}"] = False
-                registrar(store, base, "declina")
+                registrar(store, base, "declina", emp)
         with d2:
             if st.button("Cancelar", use_container_width=True, key=f"cancel_{emp.n}"):
                 st.session_state[f"confirmar_{emp.n}"] = False

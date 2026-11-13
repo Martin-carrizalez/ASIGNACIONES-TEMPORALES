@@ -19,7 +19,7 @@ import datos
 import generar
 import respuestas
 
-LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.jpg"
+LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.png"
 TITULO = "Asignación temporal"
 SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"

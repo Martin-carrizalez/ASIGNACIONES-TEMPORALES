@@ -8,24 +8,27 @@ no desea continuar. Todo queda con fecha y hora.
     streamlit run app.py
 """
 
+import base64
 import dataclasses
 import html
+import json
 from datetime import datetime
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 import datos
 import generar
 import respuestas
 
-LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.png"
+LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.jpg"
 TITULO = "Asignación temporal"
 SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"
 
 st.set_page_config(page_title=f"{TITULO} · {SUBTITULO}", page_icon="📄",
-                   layout="centered", initial_sidebar_state="expanded")
+                   layout="centered", initial_sidebar_state="auto")   # "auto": abierta en computadora, cerrada en celular
 
 # Los datos de nomina se muestran como ficha de texto normal, no como casillas
 # deshabilitadas (esas salen en gris claro y casi no se leen).
@@ -39,6 +42,21 @@ ESTILO = """
 .ficha .val.mono {font-family:ui-monospace,Menlo,Consolas,monospace; font-size:1rem;}
 .ficha .sub {font-size:.9rem; opacity:.75; font-family:ui-monospace,Menlo,Consolas,monospace;}
 .ficha .ct {border-left:4px solid #e5007d; padding-left:12px;}
+/* scroll-margin: al colocarse en el aviso, que no lo tape la barra de arriba */
+.aviso {scroll-margin-top:72px; border:3px solid #d97706; background:rgba(245,158,11,.12); border-radius:12px;
+        padding:18px 22px; margin:8px 0 14px;}
+.aviso .tit {font-size:1.45rem; font-weight:800; color:#b45309; margin-bottom:8px;}
+.aviso ol {margin:0 0 0 1.2rem; padding:0; font-size:1.08rem; line-height:1.6;}
+.aviso .pie {margin-top:10px; font-weight:700;}
+/* En celular y tablet chica la barra lateral arranca cerrada: el logo se muestra
+   arriba de la pantalla principal. En computadora se oculta (ya esta en la barra). */
+.logo-movil {display:none;}
+@media (max-width: 768px) {
+  .logo-movil {display:block; width:100%; max-width:420px; border-radius:10px; margin:0 auto 6px;}
+  .aviso {padding:14px 16px;}
+  .aviso .tit {font-size:1.2rem;}
+  .aviso ol {font-size:1rem;}
+}
 </style>
 """
 
@@ -88,6 +106,18 @@ def ficha_nomina(emp):
 """, unsafe_allow_html=True)
 
 
+@st.cache_resource
+def _logo_base64():
+    return base64.b64encode(LOGO.read_bytes()).decode() if LOGO.exists() else None
+
+
+def logo_movil():
+    b64 = _logo_base64()
+    if b64:
+        st.markdown(f'<img class="logo-movil" src="data:image/jpeg;base64,{b64}" alt="RH DFC">',
+                    unsafe_allow_html=True)
+
+
 def barra_lateral():
     with st.sidebar:
         if LOGO.exists():              # si falta la imagen la app sigue sin logo
@@ -119,11 +149,41 @@ def fecha_del_formato(fecha_hora: str) -> str:
         return generar.fecha_larga()
 
 
+AVISO_DESCARGA = f"""
+<div class="aviso">
+  <div class="tit">⚠️ TU TRÁMITE TODAVÍA NO TERMINA</div>
+  <ol>
+    <li>Descarga tu formato con el botón de abajo.</li>
+    <li>Imprímelo y fírmalo.</li>
+    <li>Recaba la firma de quien libera el recurso.</li>
+    <li>Entrégalo en Recursos Humanos de la {AREA}.</li>
+  </ol>
+  <div class="pie">Sin el formato impreso y firmado, tu asignación no se tramita.</div>
+</div>
+"""
+
+
+@st.cache_data(show_spinner="Preparando tu formato…", max_entries=200)
+def pdf_formato(_final, clave):
+    # _final no se usa para el cache (el guion bajo lo excluye); la clave son sus
+    # datos y la fecha, asi el PDF se genera una sola vez por persona.
+    return generar.generar_pdf(_final, clave[1])
+
+
+def _al_descargar():
+    """Al pulsar Descargar: la descarga arranca y la app regresa al inicio."""
+    st.session_state["_volver"] = True
+    st.session_state["_arriba"] = True
+    st.session_state["_mensaje"] = (
+        "Tu formato se está descargando. Búscalo en la carpeta Descargas de tu equipo, "
+        "imprímelo, fírmalo, recaba la firma de quien libera el recurso y entrégalo en "
+        f"Recursos Humanos de la {AREA}.")
+
+
 def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
-    """Formato Word listo para imprimir, ya con las correcciones que hizo la persona.
-    Solo se ofrece si el expediente esta completo; si falta algo (por ejemplo el
-    titular que libera), Recursos Humanos lo entrega cuando se complete.
-    La fecha del formato es el dia en que la persona acepto (fecha_hora de su respuesta)."""
+    """Formato en PDF protegido, con los datos que la persona acepto. Nunca se
+    entrega el Word: se podria editar. Si el expediente esta incompleto (por
+    ejemplo, sin titular que libere), RH lo entrega cuando se complete."""
     final = dataclasses.replace(emp, nombre=nombre.strip() or emp.nombre,
                                 correo=correo.strip() or emp.correo,
                                 telefono=telefono.strip() or emp.telefono)
@@ -131,12 +191,42 @@ def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
         st.info("Tu formato todavía tiene un dato pendiente de completar. "
                 f"Recursos Humanos de la {AREA} te lo entrega en cuanto esté listo.")
         return
+    fecha = fecha_del_formato(fecha_hora)
+    try:
+        pdf = pdf_formato(final, (repr(final), fecha))
+    except Exception:
+        st.error("No se pudo preparar tu formato en este momento. Intenta de nuevo en "
+                 f"unos minutos o avisa a Recursos Humanos de la {AREA}.")
+        return
+    st.markdown(AVISO_DESCARGA, unsafe_allow_html=True)
     st.download_button(
-        "⬇️ Descargar mi formato en Word", data=generar.generar_bytes(final, fecha_del_formato(fecha_hora)),
-        file_name=generar.nombre_archivo(final), key=f"dl_{emp.n}",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
-    st.caption("Imprímelo, fírmalo, recaba la firma de quien libera el recurso y "
-               f"entrégalo en Recursos Humanos de la {AREA}.")
+        "⬇️  DESCARGAR MI FORMATO (PDF)", data=pdf, type="primary",
+        file_name=generar.nombre_archivo(final, "pdf"), mime="application/pdf",
+        use_container_width=True, key=f"dl_{emp.n}", on_click=_al_descargar)
+
+
+# Mueve la pantalla al aviso (si se da un selector CSS) o hasta arriba. Sin esto,
+# despues de pulsar un boton al final de la pagina el aviso queda fuera de la vista
+# y parece que no paso nada. Reintenta unos instantes porque el aviso puede
+# dibujarse un momento despues que este script.
+_JS_MOVER = """<script>
+const d = window.parent.document;
+const destino = __DESTINO__;
+let intentos = 0;
+function mover() {
+  const el = destino ? d.querySelector(destino) : null;
+  if (el) { el.scrollIntoView({block: "start"}); return; }
+  if (destino && ++intentos < 30) { setTimeout(mover, 100); return; }
+  ['[data-testid="stMain"]', '[data-testid="stAppViewContainer"]', 'section.main']
+    .forEach(sel => d.querySelectorAll(sel).forEach(e => e.scrollTo({top: 0})));
+  window.parent.scrollTo({top: 0});
+}
+mover();
+</script>"""
+
+
+def mover_pantalla(destino=None):
+    components.html(_JS_MOVER.replace("__DESTINO__", json.dumps(destino)), height=0)
 
 
 # Campos que se limpian al volver a la pantalla de inicio, para que la siguiente
@@ -144,9 +234,10 @@ def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
 _CAMPOS_SESION = ("rfc", "nom_", "cor_", "tel_", "obs_", "confirmar_")
 
 MENSAJE_FINAL = {
-    "acepta": "Tu aceptación quedó registrada. Para volver a descargar tu formato, "
-              "entra de nuevo con tu RFC.",
     "declina": "Quedó registrado que no deseas continuar. Tu adscripción no se mueve.",
+    "error": "Tu observación quedó registrada. Debes esperar la respuesta de Recursos "
+             f"Humanos de la {AREA}: cuando la solvente, vuelve a entrar con tu RFC para "
+             "confirmar tus datos y descargar tu formato.",
 }
 
 
@@ -154,6 +245,7 @@ def volver_al_inicio(mensaje=None):
     """Regresa a la pantalla de inicio con la casilla del RFC vacia. El mensaje se
     muestra una vez arriba de esa casilla."""
     st.session_state["_volver"] = True
+    st.session_state["_arriba"] = True
     if mensaje:
         st.session_state["_mensaje"] = mensaje
     st.rerun()
@@ -175,15 +267,16 @@ def registrar(store, base, decision):
     """Guarda la respuesta, salvo que la solicitud ya este cerrada: cubre el doble
     clic y el caso de tener la app abierta en dos pestañas.
 
-    Aceptar o declinar son decisiones finales: guardan y regresan al inicio.
-    Reportar un error no: se queda en la misma pantalla mostrando el reporte,
-    porque la solicitud sigue abierta hasta que RH lo solvente."""
+    - Aceptar: se queda en su pantalla, arriba, con el aviso y el boton de
+      descarga. Regresa al inicio hasta que pulsa Descargar.
+    - Declinar o reportar un error: regresa al inicio con su aviso arriba. El
+      error deja la solicitud abierta hasta que RH lo solvente."""
     previa = store.estado_de(base["rfc"], base["n"])
     if not (previa and previa["decision"] in respuestas.FINALES):
         store.guardar({**base, "decision": decision})
-    if decision in respuestas.FINALES:
-        volver_al_inicio(MENSAJE_FINAL[decision])
-    st.rerun()
+    if decision == "acepta":
+        st.rerun()                  # su vista ya se coloca sola en el aviso
+    volver_al_inicio(MENSAJE_FINAL[decision])
 
 
 def mostrar_cerrada(emp, resp):
@@ -193,6 +286,12 @@ def mostrar_cerrada(emp, resp):
         st.info(f"El {resp['fecha_hora']} registraste que **no deseas continuar** en la "
                 f"{AREA}. Tu respuesta quedó registrada y ya no se puede modificar.")
     else:
+        # Aviso y boton primero, y la pantalla se coloca ahi: tanto al aceptar como
+        # cuando la persona regresa a reimprimir. El PDF sale siempre con los datos
+        # que la persona acepto.
+        boton_descarga(emp, str(resp["nombre_corregido"]), str(resp["correo_corregido"]),
+                       str(resp["telefono_corregido"]), str(resp["fecha_hora"]))
+        mover_pantalla(".aviso")
         st.success(f"**Aceptaste esta asignación el {resp['fecha_hora']}.** "
                    "Tu respuesta quedó registrada y ya no se puede modificar.")
         with st.container(border=True):
@@ -205,9 +304,6 @@ def mostrar_cerrada(emp, resp):
   <div><div class="etq">Teléfono</div><div class="val">{_e(resp['telefono_corregido'])}</div></div>
 </div>
 """, unsafe_allow_html=True)
-        # El Word sale siempre con los datos que la persona acepto, no editables.
-        boton_descarga(emp, str(resp["nombre_corregido"]), str(resp["correo_corregido"]),
-                       str(resp["telefono_corregido"]), str(resp["fecha_hora"]))
     st.caption(f"Si necesitas cambiar tu respuesta, acude a Recursos Humanos de la {AREA}.")
     if st.button("Salir", key=f"salir_{emp.n}"):
         volver_al_inicio()
@@ -294,7 +390,10 @@ def mostrar_solicitud(emp, store):
 
 def main():
     st.markdown(ESTILO, unsafe_allow_html=True)
+    if st.session_state.pop("_arriba", False):
+        mover_pantalla()
     barra_lateral()
+    logo_movil()
     st.title(TITULO)
     st.caption(f"{SUBTITULO} · {AREA}")
     st.write("Antes de generar tu formato necesitamos que revises que tus datos "

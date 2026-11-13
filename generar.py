@@ -11,7 +11,11 @@ Lee los datos del Google Sheet (variables SHEET_ID y GOOGLE_SERVICE_ACCOUNT_JSON
 """
 
 import io
+import secrets
+import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -170,9 +174,53 @@ def generar_bytes(emp, fecha=None) -> bytes:
     generar(emp, buf, fecha)
     return buf.getvalue()
 
-def nombre_archivo(emp) -> str:
+def a_pdf(docx_bytes: bytes) -> bytes:
+    """Convierte el Word a PDF con LibreOffice y le quita el permiso de edicion.
+
+    Al empleado se le entrega SOLO el PDF: un Word lo puede editar en cualquier
+    computadora y se perderia el control sobre los datos de nomina."""
+    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    if not soffice:
+        raise RuntimeError("LibreOffice no esta instalado (en Streamlit Cloud va en packages.txt).")
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        entrada = tmp / "formato.docx"
+        entrada.write_bytes(docx_bytes)
+        # Perfil propio por conversion: si dos personas descargan al mismo tiempo,
+        # LibreOffice no se traba peleando por el mismo perfil.
+        perfil = (tmp / "perfil").as_uri()
+        subprocess.run(
+            [soffice, f"-env:UserInstallation={perfil}", "--headless",
+             "--convert-to", "pdf", "--outdir", str(tmp), str(entrada)],
+            check=True, capture_output=True, timeout=180)
+        salida = tmp / "formato.pdf"
+        if not salida.exists():
+            raise RuntimeError("LibreOffice no genero el PDF.")
+        return proteger(salida.read_bytes())
+
+
+def proteger(pdf_bytes: bytes) -> bytes:
+    """Cifra el PDF dejando solo el permiso de imprimir: abre sin contraseña, pero
+    los lectores de PDF no permiten modificarlo, copiar texto ni llenarlo. La
+    contraseña de propietario es aleatoria y no se guarda en ningun lado."""
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.constants import UserAccessPermissions as P
+    w = PdfWriter(clone_from=PdfReader(io.BytesIO(pdf_bytes)))
+    w.encrypt(user_password="", owner_password=secrets.token_hex(16),
+              permissions_flag=P.PRINT | P.PRINT_TO_REPRESENTATION)
+    out = io.BytesIO()
+    w.write(out)
+    return out.getvalue()
+
+
+def generar_pdf(emp, fecha=None) -> bytes:
+    """El formato que se le entrega al empleado: PDF protegido, nunca el Word."""
+    return a_pdf(generar_bytes(emp, fecha))
+
+
+def nombre_archivo(emp, extension="docx") -> str:
     seguro = "".join(c for c in emp.nombre if c.isalnum() or c == " ").replace(" ", "_")
-    return f"{int(emp.n):02d}_{seguro[:40]}_{emp.rfc}.docx"
+    return f"{int(emp.n):02d}_{seguro[:40]}_{emp.rfc}.{extension}"
 
 def main():
     todos = "--todos" in sys.argv

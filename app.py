@@ -9,6 +9,7 @@ no desea continuar. Todo queda con fecha y hora.
 """
 
 import dataclasses
+import html
 
 import streamlit as st
 
@@ -16,10 +17,27 @@ import datos
 import generar
 import respuestas
 
-TITULO = "Validación de datos — Asignación temporal"
+TITULO = "Asignación temporal"
+SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"
 
-st.set_page_config(page_title=TITULO, page_icon="📄", layout="centered")
+st.set_page_config(page_title=f"{TITULO} · {SUBTITULO}", page_icon="📄",
+                   layout="centered", initial_sidebar_state="expanded")
+
+# Los datos de nomina se muestran como ficha de texto normal, no como casillas
+# deshabilitadas (esas salen en gris claro y casi no se leen).
+# Los colores se heredan del tema, asi se ve bien en claro y en oscuro.
+ESTILO = """
+<style>
+.ficha {display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:14px 28px; margin:6px 0 14px;}
+.ficha .ancho {grid-column:1/-1;}
+.ficha .etq {font-size:.74rem; letter-spacing:.05em; text-transform:uppercase; opacity:.62; margin-bottom:2px;}
+.ficha .val {font-size:1.05rem; font-weight:600; line-height:1.35; word-break:break-word;}
+.ficha .val.mono {font-family:ui-monospace,Menlo,Consolas,monospace; font-size:1rem;}
+.ficha .sub {font-size:.9rem; opacity:.75; font-family:ui-monospace,Menlo,Consolas,monospace;}
+.ficha .ct {border-left:4px solid #e5007d; padding-left:12px;}
+</style>
+"""
 
 
 def _secretos():
@@ -46,11 +64,46 @@ def almacen():
     return respuestas.Almacen(libro=libro())
 
 
-def campo_bloqueado(etiqueta, valor, n):
-    # La llave lleva el numero de solicitud: una persona puede tener dos y los
-    # campos se repiten con el mismo valor (el RFC, por ejemplo).
-    st.text_input(etiqueta, value=valor or "—", disabled=True,
-                  key=f"ro_{n}_{etiqueta}")
+def _e(valor) -> str:
+    # Todo lo que viene del Sheet se escapa antes de meterlo al HTML de la ficha.
+    return html.escape(str(valor or "—"))
+
+
+def ficha_nomina(emp):
+    """Datos de nomina en texto grande y legible, solo lectura."""
+    claves = "<br>".join(_e(c) for c in emp.claves) or "—"
+    st.markdown(f"""
+<div class="ficha">
+  <div><div class="etq">RFC</div><div class="val mono">{_e(emp.rfc)}</div></div>
+  <div><div class="etq">Sostenimiento</div><div class="val">{_e(emp.sostenimiento)}</div></div>
+  <div class="ancho"><div class="etq">Clave(s) presupuestal(es)</div><div class="val mono">{claves}</div></div>
+  <div class="ct"><div class="etq">Centro de trabajo actual</div>
+       <div class="val">{_e(emp.ct_actual_nombre)}</div><div class="sub">{_e(emp.ct_actual_clave)}</div></div>
+  <div class="ct"><div class="etq">Centro de trabajo solicitado</div>
+       <div class="val">{_e(emp.ct_solicitado_nombre)}</div><div class="sub">{_e(emp.ct_solicitado_clave)}</div></div>
+</div>
+""", unsafe_allow_html=True)
+
+
+def barra_lateral():
+    with st.sidebar:
+        st.markdown(f"### {AREA}")
+        st.caption("Recursos Humanos")
+        st.divider()
+        st.markdown("**Cómo funciona**")
+        st.markdown(
+            "1. Entra con tu RFC.\n"
+            "2. Revisa tus datos.\n"
+            "3. Corrige tu nombre, correo o teléfono si hace falta.\n"
+            "4. Confirma que están correctos, o reporta el error.\n"
+            "5. Descarga tu formato, imprímelo y recaba las firmas.")
+        st.divider()
+        st.markdown("**Es de libre elección**")
+        st.caption(f"Nadie está obligado a continuar en la {AREA}. "
+                   "Si decides no continuar, tu adscripción no se mueve.")
+        st.divider()
+        st.caption("¿Un dato de nómina no coincide? No lo corrijas por tu cuenta: "
+                   "repórtalo con el botón «Hay un error en mis datos».")
 
 
 def boton_descarga(emp, nombre, correo, telefono):
@@ -83,34 +136,28 @@ def mostrar_solicitud(emp, store):
             boton_descarga(emp, str(previa["nombre_corregido"]),
                            str(previa["correo_corregido"]), str(previa["telefono_corregido"]))
 
-    st.subheader("Datos que no puedes editar aquí")
-    st.caption(
-        "Estos vienen de nómina. Si alguno no coincide, no lo corrijas por tu cuenta: "
-        "repórtalo abajo y se revisa contra nómina antes de generar el formato.")
-    col1, col2 = st.columns(2)
-    with col1:
-        campo_bloqueado("RFC", emp.rfc, emp.n)
-        campo_bloqueado("Sostenimiento", emp.sostenimiento, emp.n)
-        campo_bloqueado("Centro de trabajo actual", emp.ct_actual_nombre, emp.n)
-        campo_bloqueado("Clave del centro actual", emp.ct_actual_clave, emp.n)
-    with col2:
-        campo_bloqueado("Claves presupuestales", " | ".join(emp.claves), emp.n)
-        campo_bloqueado("Centro de trabajo solicitado", emp.ct_solicitado_nombre, emp.n)
-        campo_bloqueado("Clave del centro solicitado", emp.ct_solicitado_clave, emp.n)
+    with st.container(border=True):
+        st.markdown("#### Tus datos de nómina")
+        st.caption("No se editan aquí. Si alguno no coincide, repórtalo abajo y se "
+                   "revisa contra nómina antes de generar tu formato.")
+        ficha_nomina(emp)
 
-    st.subheader("Datos que sí puedes corregir")
-    nombre = st.text_input("Nombre completo, como debe aparecer en el documento",
-                           value=emp.nombre, key=f"nom_{emp.n}")
-    correo = st.text_input("Correo electrónico", value=emp.correo, key=f"cor_{emp.n}")
-    telefono = st.text_input("Teléfono", value=emp.telefono, key=f"tel_{emp.n}")
+    with st.container(border=True):
+        st.markdown("#### Datos que sí puedes corregir")
+        nombre = st.text_input("Nombre completo, como debe aparecer en el documento",
+                               value=emp.nombre, key=f"nom_{emp.n}")
+        c_correo, c_tel = st.columns(2)
+        with c_correo:
+            correo = st.text_input("Correo electrónico", value=emp.correo, key=f"cor_{emp.n}")
+        with c_tel:
+            telefono = st.text_input("Teléfono", value=emp.telefono, key=f"tel_{emp.n}")
 
     observaciones = st.text_area(
         "Observaciones (obligatorio si reportas un error)",
         placeholder="Ejemplo: mi clave presupuestal no coincide con la de mi talón de pago.",
         key=f"obs_{emp.n}")
 
-    st.divider()
-    st.write("**¿Qué deseas hacer?**")
+    st.markdown("#### ¿Qué deseas hacer?")
 
     base = dict(n=emp.n, rfc=emp.rfc, nombre_en_relacion=emp.nombre,
                 nombre_corregido=nombre, correo_corregido=correo,
@@ -119,7 +166,7 @@ def mostrar_solicitud(emp, store):
     c1, c2 = st.columns(2)
     with c1:
         if st.button("✅ Mis datos son correctos y acepto la asignación",
-                     use_container_width=True, key=f"ok_{emp.n}"):
+                     type="primary", use_container_width=True, key=f"ok_{emp.n}"):
             guardado = store.guardar({**base, "decision": "acepta"})
             st.session_state[f"acuse_{emp.n}"] = ("acepta", guardado["fecha_hora"], nombre, correo, telefono)
             st.rerun()
@@ -145,7 +192,7 @@ def mostrar_solicitud(emp, store):
             "Con esto no se tramita tu asignación temporal.")
         d1, d2 = st.columns(2)
         with d1:
-            if st.button("Sí, confirmo", type="primary",
+            if st.button("Sí, confirmo que no continúo",
                          use_container_width=True, key=f"condec_{emp.n}"):
                 guardado = store.guardar({**base, "decision": "declina"})
                 st.session_state[f"acuse_{emp.n}"] = ("declina", guardado["fecha_hora"], nombre, correo, telefono)
@@ -178,11 +225,12 @@ def mostrar_acuse(emp):
 
 
 def main():
+    st.markdown(ESTILO, unsafe_allow_html=True)
+    barra_lateral()
     st.title(TITULO)
-    st.write(
-        f"Antes de generar tu formato de asignación temporal necesitamos que revises "
-        f"que tus datos estén correctos. Entra con tu RFC a 13 caracteres."
-    )
+    st.caption(f"{SUBTITULO} · {AREA}")
+    st.write("Antes de generar tu formato necesitamos que revises que tus datos "
+             "estén correctos. Entra con tu RFC a 13 caracteres.")
 
     store = almacen()
 

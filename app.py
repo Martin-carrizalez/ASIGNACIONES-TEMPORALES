@@ -125,16 +125,50 @@ def boton_descarga(emp, nombre, correo, telefono):
                f"entrégalo en Recursos Humanos de la {AREA}.")
 
 
+def registrar(store, base, decision):
+    """Guarda la respuesta, salvo que la solicitud ya este cerrada: cubre el doble
+    clic y el caso de tener la app abierta en dos pestañas."""
+    previa = store.estado_de(base["rfc"], base["n"])
+    if not (previa and previa["decision"] in respuestas.FINALES):
+        store.guardar({**base, "decision": decision})
+    st.rerun()
+
+
+def mostrar_cerrada(emp, resp):
+    """Solicitud ya aceptada o declinada: solo lectura. No hay forma de editar,
+    volver a contestar ni cambiar de decision desde la app."""
+    if resp["decision"] == "declina":
+        st.info(f"El {resp['fecha_hora']} registraste que **no deseas continuar** en la "
+                f"{AREA}. Tu respuesta quedó registrada y ya no se puede modificar.")
+    else:
+        st.success(f"**Aceptaste esta asignación el {resp['fecha_hora']}.** "
+                   "Tu respuesta quedó registrada y ya no se puede modificar.")
+        with st.container(border=True):
+            st.markdown("#### Datos que aceptaste")
+            ficha_nomina(emp)
+            st.markdown(f"""
+<div class="ficha">
+  <div class="ancho"><div class="etq">Nombre</div><div class="val">{_e(resp['nombre_corregido'])}</div></div>
+  <div><div class="etq">Correo electrónico</div><div class="val">{_e(resp['correo_corregido'])}</div></div>
+  <div><div class="etq">Teléfono</div><div class="val">{_e(resp['telefono_corregido'])}</div></div>
+</div>
+""", unsafe_allow_html=True)
+        # El Word sale siempre con los datos que la persona acepto, no editables.
+        boton_descarga(emp, str(resp["nombre_corregido"]),
+                       str(resp["correo_corregido"]), str(resp["telefono_corregido"]))
+    st.caption(f"Si necesitas cambiar tu respuesta, acude a Recursos Humanos de la {AREA}.")
+
+
 def mostrar_solicitud(emp, store):
-    previa = store.ultima_de(emp.rfc, emp.n)
-    if previa:
-        st.success(
-            f"Ya contestaste esta solicitud el {previa['fecha_hora']}: "
-            f"**{respuestas.DECISIONES.get(previa['decision'], previa['decision'])}**. "
-            "Si te equivocaste, puedes volver a contestar y se toma la última.")
-        if previa["decision"] == "acepta":
-            boton_descarga(emp, str(previa["nombre_corregido"]),
-                           str(previa["correo_corregido"]), str(previa["telefono_corregido"]))
+    previa = store.estado_de(emp.rfc, emp.n)
+    if previa and previa["decision"] in respuestas.FINALES:
+        mostrar_cerrada(emp, previa)
+        return
+    if previa:      # solo ha reportado un error: la solicitud sigue abierta
+        st.warning(
+            f"El {previa['fecha_hora']} reportaste un error: «{previa['observaciones']}». "
+            "Cuando Recursos Humanos lo corrija verás aquí el dato actualizado y "
+            "podrás confirmar.")
 
     with st.container(border=True):
         st.markdown("#### Tus datos de nómina")
@@ -158,6 +192,8 @@ def mostrar_solicitud(emp, store):
         key=f"obs_{emp.n}")
 
     st.markdown("#### ¿Qué deseas hacer?")
+    st.caption("Aceptar y no continuar son respuestas definitivas: una vez enviadas "
+               "no se pueden cambiar desde aquí. Revisa bien antes de confirmar.")
 
     base = dict(n=emp.n, rfc=emp.rfc, nombre_en_relacion=emp.nombre,
                 nombre_corregido=nombre, correo_corregido=correo,
@@ -167,37 +203,31 @@ def mostrar_solicitud(emp, store):
     with c1:
         if st.button("✅ Mis datos son correctos y acepto la asignación",
                      type="primary", use_container_width=True, key=f"ok_{emp.n}"):
-            guardado = store.guardar({**base, "decision": "acepta"})
-            st.session_state[f"acuse_{emp.n}"] = ("acepta", guardado["fecha_hora"], nombre, correo, telefono)
-            st.rerun()
+            registrar(store, base, "acepta")
     with c2:
         if st.button("✏️ Hay un error en mis datos",
                      use_container_width=True, key=f"err_{emp.n}"):
             if not observaciones.strip():
                 st.error("Escribe en observaciones cuál es el dato equivocado.")
             else:
-                guardado = store.guardar({**base, "decision": "error"})
-                st.session_state[f"acuse_{emp.n}"] = ("error", guardado["fecha_hora"], nombre, correo, telefono)
-                st.rerun()
+                registrar(store, base, "error")
 
     st.divider()
     st.caption(
         f"Continuar en la {AREA} es de libre elección: nadie está obligado. "
         "Si decides no continuar, tu adscripción no se mueve.")
 
-    # Declinar es la única acción que no se puede deshacer sola, por eso va en dos pasos.
+    # Declinar es definitivo, por eso va en dos pasos.
     if st.session_state.get(f"confirmar_{emp.n}"):
         st.warning(
             f"¿Confirmas que **no deseas continuar** en la {AREA}? "
-            "Con esto no se tramita tu asignación temporal.")
+            "Con esto no se tramita tu asignación temporal y no podrás cambiarlo aquí.")
         d1, d2 = st.columns(2)
         with d1:
             if st.button("Sí, confirmo que no continúo",
                          use_container_width=True, key=f"condec_{emp.n}"):
-                guardado = store.guardar({**base, "decision": "declina"})
-                st.session_state[f"acuse_{emp.n}"] = ("declina", guardado["fecha_hora"], nombre, correo, telefono)
                 st.session_state[f"confirmar_{emp.n}"] = False
-                st.rerun()
+                registrar(store, base, "declina")
         with d2:
             if st.button("Cancelar", use_container_width=True, key=f"cancel_{emp.n}"):
                 st.session_state[f"confirmar_{emp.n}"] = False
@@ -206,22 +236,6 @@ def mostrar_solicitud(emp, store):
         if st.button(f"🚫 No deseo continuar en la {AREA}", key=f"dec_{emp.n}"):
             st.session_state[f"confirmar_{emp.n}"] = True
             st.rerun()
-
-
-def mostrar_acuse(emp):
-    decision, cuando, nombre, correo, telefono = st.session_state[f"acuse_{emp.n}"]
-    st.success(f"**Acuse registrado el {cuando}**")
-    st.write({
-        "acepta": "Quedó registrado que tus datos son correctos y que aceptas la asignación temporal.",
-        "error": "Quedó registrado el error que reportaste. Se revisa y se te vuelve a mostrar el dato corregido.",
-        "declina": f"Quedó registrado que no deseas continuar en la {AREA}. Tu adscripción no se mueve.",
-    }[decision])
-    if decision == "acepta":
-        boton_descarga(emp, nombre, correo, telefono)
-    st.caption("Toma captura de pantalla de este acuse para tu control.")
-    if st.button("Volver a revisar mis datos", key=f"volver_{emp.n}"):
-        del st.session_state[f"acuse_{emp.n}"]
-        st.rerun()
 
 
 def main():
@@ -263,16 +277,9 @@ def main():
         etiquetas = [f"Solicitud {e.n} — {e.ct_actual_nombre[:38]}" for e in solicitudes]
         for pestana, emp in zip(st.tabs(etiquetas), solicitudes):
             with pestana:
-                if f"acuse_{emp.n}" in st.session_state:
-                    mostrar_acuse(emp)
-                else:
-                    mostrar_solicitud(emp, store)
+                mostrar_solicitud(emp, store)
     else:
-        emp = solicitudes[0]
-        if f"acuse_{emp.n}" in st.session_state:
-            mostrar_acuse(emp)
-        else:
-            mostrar_solicitud(emp, store)
+        mostrar_solicitud(solicitudes[0], store)
 
 
 if __name__ == "__main__":

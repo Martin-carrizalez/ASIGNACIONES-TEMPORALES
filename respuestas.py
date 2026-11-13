@@ -18,6 +18,8 @@ CAMPOS = [
     "nombre_corregido", "correo_corregido", "telefono_corregido", "observaciones",
 ]
 
+FINALES = {"acepta", "declina"}      # cierran la solicitud; "error" no
+
 DECISIONES = {
     "acepta": "Datos correctos, acepta la asignación",
     "error": "Reporta un error en sus datos",
@@ -42,7 +44,11 @@ class Almacen:
                 self._hoja = libro.worksheet(HOJA)
             except Exception:
                 self._hoja = libro.add_worksheet(HOJA, rows=500, cols=len(CAMPOS))
-                self._hoja.append_row(CAMPOS)
+            # Los encabezados se aseguran SIEMPRE, no solo al crear la pestaña: si la
+            # pestaña ya existia vacia, o ya tiene respuestas sin encabezados, se
+            # insertan en la fila 1 y lo que hubiera se recorre hacia abajo intacto.
+            if [c.strip() for c in self._hoja.row_values(1)] != CAMPOS:
+                self._hoja.insert_row(CAMPOS, 1)
         return self._hoja
 
     def guardar(self, registro: dict) -> dict:
@@ -52,11 +58,22 @@ class Almacen:
         return fila
 
     def leer(self) -> list:
-        return self.hoja().get_all_records()
+        # Se lee por posicion de columna (el orden de CAMPOS), sin depender de lo
+        # que diga la fila de encabezados.
+        filas = self.hoja().get_all_values()[1:]
+        return [dict(zip(CAMPOS, f + [""] * (len(CAMPOS) - len(f)))) for f in filas if any(f)]
 
-    def ultima_de(self, rfc: str, n: str):
-        """Ultima respuesta de una solicitud concreta: una persona puede tener dos."""
-        previas = [r for r in self.leer()
+    def estado_de(self, rfc: str, n: str):
+        """La respuesta que rige para una solicitud (una persona puede tener dos).
+
+        Aceptar y declinar son definitivas: la PRIMERA de ellas cierra la solicitud
+        y cualquier fila posterior se ignora. Reportar un error no cierra nada: si
+        solo hay reportes de error, rige el ultimo. Sin respuestas devuelve None.
+        Para reabrir una solicitud cerrada, RH borra su fila en esta pestaña."""
+        propias = [r for r in self.leer()
                    if str(r.get("rfc", "")).upper() == str(rfc).upper()
                    and str(r.get("n", "")) == str(n)]
-        return previas[-1] if previas else None
+        for r in propias:
+            if r.get("decision") in FINALES:
+                return r
+        return propias[-1] if propias else None

@@ -191,7 +191,15 @@ def main():
     if not rfc:
         st.stop()
 
-    solicitudes = [e for e in cargar() if e.rfc.upper() == rfc]
+    # Los mensajes de datos.py solo nombran pestañas y encabezados, nunca datos
+    # de personas, por eso se pueden mostrar tal cual.
+    try:
+        empleados = cargar()
+    except RuntimeError as e:
+        st.error(f"No pude leer la relación: {e}")
+        st.stop()
+
+    solicitudes = [e for e in empleados if e.rfc.upper() == rfc]
     if not solicitudes:
         st.error("Ese RFC no está en la relación de solicitudes. "
                  "Revísalo; si está bien escrito, avisa a Recursos Humanos de la "

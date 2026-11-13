@@ -18,7 +18,6 @@ ALCANCE = ["https://www.googleapis.com/auth/spreadsheets"]
 
 HOJA_EMPLEADOS = "De interes"
 HOJA_DIRECTORIO = "directorio"
-FILA_ENCABEZADO = 2          # en tu Sheet el titulo ocupa la fila 1
 
 # La plantilla solo tiene 4 renglones para claves presupuestales.
 MAX_CLAVES = 4
@@ -107,6 +106,17 @@ def directorio_desde_filas(filas) -> dict:
             idx[nucleo(cargo)] = (titular, cargo)
     return idx
 
+def directorio_filas(valores) -> list:
+    """Convierte la pestaña del directorio en dicts, buscando sola su fila de
+    encabezados (la que tenga dependencia_cargo y titular)."""
+    for i, fila in enumerate(valores[:15]):
+        enc = [_enc(c).lower() for c in fila]
+        if "dependencia_cargo" in enc and "titular" in enc:
+            return [dict(zip(enc, f)) for f in valores[i + 1:]]
+    raise RuntimeError(
+        f"En la pestaña '{HOJA_DIRECTORIO}' no encontré los encabezados "
+        "dependencia_cargo y titular.")
+
 def resolver_director(centro_nombre, idx) -> Director:
     k = nucleo(centro_nombre)
     if not k:
@@ -185,19 +195,39 @@ COLUMNAS = {
     "estatus": ["ESTATUS", "PEDIR/PRESTADO", "TIPO"],
 }
 
+def _enc(h) -> str:
+    """Encabezado comparable: sin acentos, en mayusculas y sin saltos de linea ni
+    espacios dobles (en Sheets es comun que un encabezado traiga un Alt+Enter)."""
+    return " ".join(sin_acentos(h).upper().replace("º", "°").split())
+
+def fila_de_encabezados(filas) -> int:
+    """Busca sola la fila de encabezados: la primera que tenga NOMBRE y RFC.
+    Asi da igual si arriba hay un titulo, filas vacias o nada."""
+    for i, fila in enumerate(filas[:15]):
+        celdas = {_enc(c) for c in fila}
+        if "NOMBRE" in celdas and "RFC" in celdas:
+            return i
+    raise RuntimeError(
+        f"En la pestaña '{HOJA_EMPLEADOS}' no encontré la fila de encabezados: "
+        "en las primeras 15 filas debe haber una con las columnas NOMBRE y RFC.")
+
+OPCIONALES = {"n", "estatus"}    # sin N° se numera por orden de aparicion
+
 def _mapa_columnas(encabezados) -> dict:
-    normal = [sin_acentos(h).upper().strip() for h in encabezados]
+    normal = [_enc(h) for h in encabezados]
     mapa = {}
     for campo, opciones in COLUMNAS.items():
         for o in opciones:
-            if sin_acentos(o).upper() in normal:
-                mapa[campo] = normal.index(sin_acentos(o).upper())
+            if _enc(o) in normal:
+                mapa[campo] = normal.index(_enc(o))
                 break
-    faltan = [c for c in COLUMNAS if c not in mapa and c != "estatus"]
+    faltan = [c for c in COLUMNAS if c not in mapa and c not in OPCIONALES]
     if faltan:
         raise RuntimeError(
-            "Al Sheet le faltan columnas: " + ", ".join(faltan) +
-            ". Encabezados encontrados: " + ", ".join(h for h in encabezados if h))
+            f"A la pestaña '{HOJA_EMPLEADOS}' le faltan estas columnas: "
+            + "; ".join(COLUMNAS[c][0] for c in faltan)
+            + ". Encabezados que sí encontré: "
+            + "; ".join(" ".join(str(h).split()) for h in encabezados if str(h).strip()))
     return mapa
 
 def empleados_desde_filas(filas) -> list:
@@ -215,7 +245,7 @@ def empleados_desde_filas(filas) -> list:
         if not val(fila, "nombre"):
             continue
         out.append(Empleado(
-            n=val(fila, "n"), nombre=val(fila, "nombre"),
+            n=val(fila, "n") or str(len(out) + 1), nombre=val(fila, "nombre"),
             rfc=val(fila, "rfc").upper(), sostenimiento=val(fila, "sostenimiento"),
             claves=_claves(fila[mapa["claves"]] if mapa["claves"] < len(fila) else ""),
             correo=val(fila, "correo").lower(), telefono=val(fila, "telefono"),
@@ -239,6 +269,7 @@ def con_directores(empleados, idx) -> list:
 
 def cargar(libro) -> list:
     """Lee el Sheet ya abierto y devuelve los empleados con sus directores resueltos."""
-    filas = libro.worksheet(HOJA_EMPLEADOS).get_all_values()[FILA_ENCABEZADO - 1:]
-    idx = directorio_desde_filas(libro.worksheet(HOJA_DIRECTORIO).get_all_records())
+    filas = libro.worksheet(HOJA_EMPLEADOS).get_all_values()
+    filas = filas[fila_de_encabezados(filas):]
+    idx = directorio_desde_filas(directorio_filas(libro.worksheet(HOJA_DIRECTORIO).get_all_values()))
     return con_directores(empleados_desde_filas(filas), idx)

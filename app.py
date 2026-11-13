@@ -22,12 +22,14 @@ import datos
 import generar
 import respuestas
 
-LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.png"
+LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.jpg"
 TITULO = "Asignación temporal"
 SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"
 # Desde cuando regresa a su centro de origen quien decide no continuar.
 INICIO_PERIODO = "enero de 2027"
+# Ultimo dia para entregar el formato firmado en la DFC.
+FECHA_LIMITE = "viernes 20 de noviembre de 2026"
 
 st.set_page_config(page_title=f"{TITULO} · {SUBTITULO}", page_icon="📄",
                    layout="centered", initial_sidebar_state="auto")   # "auto": abierta en computadora, cerrada en celular
@@ -44,6 +46,10 @@ ESTILO = """
 .ficha .val.mono {font-family:ui-monospace,Menlo,Consolas,monospace; font-size:1rem;}
 .ficha .sub {font-size:.9rem; opacity:.75; font-family:ui-monospace,Menlo,Consolas,monospace;}
 .ficha .ct {border-left:4px solid #e5007d; padding-left:12px;}
+.ficha .firma {margin-top:10px;}
+.ficha .firma .quien {font-size:.98rem; font-weight:700; text-transform:uppercase;}
+.ficha .firma .cargo {font-size:.85rem; opacity:.8; text-transform:uppercase;}
+.ficha .firma .falta {font-size:.92rem; font-weight:700; color:#b45309;}
 /* scroll-margin: al colocarse en el aviso, que no lo tape la barra de arriba */
 .aviso {scroll-margin-top:72px; border:3px solid #d97706; background:rgba(245,158,11,.12); border-radius:12px;
         padding:18px 22px; margin:8px 0 14px;}
@@ -98,8 +104,18 @@ def _e(valor) -> str:
     return html.escape(str(valor or "—"))
 
 
+def _firma(titulo, d):
+    """Quien firma por ese centro, tal como saldra impreso en el formato. Se le
+    muestra al empleado para que lo valide antes de aceptar, no hasta el PDF."""
+    if d.titular:
+        cuerpo = f'<div class="quien">{_e(d.titular)}</div><div class="cargo">{_e(d.cargo)}</div>'
+    else:
+        cuerpo = '<div class="falta">Pendiente: Recursos Humanos lo completa</div>'
+    return f'<div class="firma"><div class="etq">{titulo}</div>{cuerpo}</div>'
+
+
 def ficha_nomina(emp):
-    """Datos de nomina en texto grande y legible, solo lectura."""
+    """Datos de nomina y autoridades que firman, en texto legible, solo lectura."""
     claves = "<br>".join(_e(c) for c in emp.claves) or "—"
     st.markdown(f"""
 <div class="ficha">
@@ -107,9 +123,11 @@ def ficha_nomina(emp):
   <div><div class="etq">Sostenimiento</div><div class="val">{_e(emp.sostenimiento)}</div></div>
   <div class="ancho"><div class="etq">Clave(s) presupuestal(es)</div><div class="val mono">{claves}</div></div>
   <div class="ct"><div class="etq">Centro de trabajo actual</div>
-       <div class="val">{_e(emp.ct_actual_nombre)}</div><div class="sub">{_e(emp.ct_actual_clave)}</div></div>
+       <div class="val">{_e(emp.ct_actual_nombre)}</div><div class="sub">{_e(emp.ct_actual_clave)}</div>
+       {_firma("Libera el recurso", emp.libera)}</div>
   <div class="ct"><div class="etq">Centro de trabajo solicitado</div>
-       <div class="val">{_e(emp.ct_solicitado_nombre)}</div><div class="sub">{_e(emp.ct_solicitado_clave)}</div></div>
+       <div class="val">{_e(emp.ct_solicitado_nombre)}</div><div class="sub">{_e(emp.ct_solicitado_clave)}</div>
+       {_firma("Recibe el recurso", emp.recibe)}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -158,16 +176,21 @@ def fecha_del_formato(fecha_hora: str) -> str:
         return generar.fecha_larga()
 
 
-AVISO_DESCARGA = f"""
+def aviso_descarga(final) -> str:
+    """Aviso de que el tramite no termina al aceptar: que hacer, quienes firman
+    y hasta cuando se entrega."""
+    libera = f"<b>{_e(final.libera.titular)}</b>, quien libera el recurso"
+    return f"""
 <div class="aviso">
   <div class="tit">⚠️ TU TRÁMITE TODAVÍA NO TERMINA</div>
   <ol>
     <li>Descarga tu formato con el botón de abajo.</li>
     <li>Imprímelo y fírmalo.</li>
-    <li>Recaba la firma de quien libera el recurso.</li>
-    <li>Entrégalo en Recursos Humanos de la {AREA}.</li>
+    <li>Recaba la firma de {libera}.</li>
+    <li>Entrégalo en Recursos Humanos de la {AREA} <b>a más tardar el {FECHA_LIMITE}</b>.</li>
   </ol>
-  <div class="pie">Sin el formato impreso y firmado, tu asignación no se tramita.</div>
+  <div class="pie">Debe llevar dos firmas: la tuya y la de quien libera el recurso.
+  Sin el formato firmado y entregado, tu asignación no se tramita.</div>
 </div>
 """
 
@@ -186,7 +209,7 @@ def _al_descargar():
     st.session_state["_mensaje"] = (
         "Tu formato se está descargando. Búscalo en la carpeta Descargas de tu equipo, "
         "imprímelo, fírmalo, recaba la firma de quien libera el recurso y entrégalo en "
-        f"Recursos Humanos de la {AREA}.")
+        f"Recursos Humanos de la {AREA} **a más tardar el {FECHA_LIMITE}**.")
 
 
 def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
@@ -212,7 +235,7 @@ def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
         st.error("No se pudo preparar tu formato en este momento. Intenta de nuevo en "
                  f"unos minutos o avisa a Recursos Humanos de la {AREA}.")
         return
-    st.markdown(AVISO_DESCARGA, unsafe_allow_html=True)
+    st.markdown(aviso_descarga(final), unsafe_allow_html=True)
     st.download_button(
         "⬇️  DESCARGAR MI FORMATO (PDF)", data=pdf, type="primary",
         file_name=generar.nombre_archivo(final, "pdf"), mime="application/pdf",
@@ -345,8 +368,9 @@ def mostrar_solicitud(emp, store):
 
     with st.container(border=True):
         st.markdown("#### Tus datos de nómina")
-        st.caption("No se editan aquí. Si alguno no coincide, repórtalo abajo y se "
-                   "revisa contra nómina antes de generar tu formato.")
+        st.caption("No se editan aquí. Revisa también quién firma por cada centro de "
+                   "trabajo. Si algo no coincide, repórtalo abajo y se revisa antes de "
+                   "generar tu formato.")
         ficha_nomina(emp)
 
     with st.container(border=True):

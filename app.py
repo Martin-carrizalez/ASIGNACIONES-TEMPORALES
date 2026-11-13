@@ -10,6 +10,8 @@ no desea continuar. Todo queda con fecha y hora.
 
 import dataclasses
 import html
+from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
@@ -17,6 +19,7 @@ import datos
 import generar
 import respuestas
 
+LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.jpg"
 TITULO = "Asignación temporal"
 SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"
@@ -87,6 +90,8 @@ def ficha_nomina(emp):
 
 def barra_lateral():
     with st.sidebar:
+        if LOGO.exists():              # si falta la imagen la app sigue sin logo
+            st.image(str(LOGO))
         st.markdown(f"### {AREA}")
         st.caption("Recursos Humanos")
         st.divider()
@@ -106,10 +111,19 @@ def barra_lateral():
                    "repórtalo con el botón «Hay un error en mis datos».")
 
 
-def boton_descarga(emp, nombre, correo, telefono):
+def fecha_del_formato(fecha_hora: str) -> str:
+    """'2026-11-12 19:22:13' -> '12 de noviembre de 2026'."""
+    try:
+        return generar.fecha_larga(datetime.strptime(fecha_hora[:10], "%Y-%m-%d").date())
+    except ValueError:
+        return generar.fecha_larga()
+
+
+def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
     """Formato Word listo para imprimir, ya con las correcciones que hizo la persona.
     Solo se ofrece si el expediente esta completo; si falta algo (por ejemplo el
-    titular que libera), Recursos Humanos lo entrega cuando se complete."""
+    titular que libera), Recursos Humanos lo entrega cuando se complete.
+    La fecha del formato es el dia en que la persona acepto (fecha_hora de su respuesta)."""
     final = dataclasses.replace(emp, nombre=nombre.strip() or emp.nombre,
                                 correo=correo.strip() or emp.correo,
                                 telefono=telefono.strip() or emp.telefono)
@@ -118,19 +132,57 @@ def boton_descarga(emp, nombre, correo, telefono):
                 f"Recursos Humanos de la {AREA} te lo entrega en cuanto esté listo.")
         return
     st.download_button(
-        "⬇️ Descargar mi formato en Word", data=generar.generar_bytes(final),
+        "⬇️ Descargar mi formato en Word", data=generar.generar_bytes(final, fecha_del_formato(fecha_hora)),
         file_name=generar.nombre_archivo(final), key=f"dl_{emp.n}",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
     st.caption("Imprímelo, fírmalo, recaba la firma de quien libera el recurso y "
                f"entrégalo en Recursos Humanos de la {AREA}.")
 
 
+# Campos que se limpian al volver a la pantalla de inicio, para que la siguiente
+# persona que use el mismo equipo no vea lo que escribio la anterior.
+_CAMPOS_SESION = ("rfc", "nom_", "cor_", "tel_", "obs_", "confirmar_")
+
+MENSAJE_FINAL = {
+    "acepta": "Tu aceptación quedó registrada. Para volver a descargar tu formato, "
+              "entra de nuevo con tu RFC.",
+    "declina": "Quedó registrado que no deseas continuar. Tu adscripción no se mueve.",
+}
+
+
+def volver_al_inicio(mensaje=None):
+    """Regresa a la pantalla de inicio con la casilla del RFC vacia. El mensaje se
+    muestra una vez arriba de esa casilla."""
+    st.session_state["_volver"] = True
+    if mensaje:
+        st.session_state["_mensaje"] = mensaje
+    st.rerun()
+
+
+def _limpiar_si_toca():
+    # Se hace antes de dibujar la casilla del RFC: Streamlit no deja cambiar el
+    # valor de un campo despues de dibujarlo.
+    if st.session_state.pop("_volver", False):
+        for k in list(st.session_state):
+            if k.startswith(_CAMPOS_SESION) and k != "rfc":
+                del st.session_state[k]
+        # El RFC se vacia asignandole "" y no borrandolo: si solo se borra, el
+        # navegador sigue mostrando el texto anterior en la casilla.
+        st.session_state["rfc"] = ""
+
+
 def registrar(store, base, decision):
     """Guarda la respuesta, salvo que la solicitud ya este cerrada: cubre el doble
-    clic y el caso de tener la app abierta en dos pestañas."""
+    clic y el caso de tener la app abierta en dos pestañas.
+
+    Aceptar o declinar son decisiones finales: guardan y regresan al inicio.
+    Reportar un error no: se queda en la misma pantalla mostrando el reporte,
+    porque la solicitud sigue abierta hasta que RH lo solvente."""
     previa = store.estado_de(base["rfc"], base["n"])
     if not (previa and previa["decision"] in respuestas.FINALES):
         store.guardar({**base, "decision": decision})
+    if decision in respuestas.FINALES:
+        volver_al_inicio(MENSAJE_FINAL[decision])
     st.rerun()
 
 
@@ -154,9 +206,11 @@ def mostrar_cerrada(emp, resp):
 </div>
 """, unsafe_allow_html=True)
         # El Word sale siempre con los datos que la persona acepto, no editables.
-        boton_descarga(emp, str(resp["nombre_corregido"]),
-                       str(resp["correo_corregido"]), str(resp["telefono_corregido"]))
+        boton_descarga(emp, str(resp["nombre_corregido"]), str(resp["correo_corregido"]),
+                       str(resp["telefono_corregido"]), str(resp["fecha_hora"]))
     st.caption(f"Si necesitas cambiar tu respuesta, acude a Recursos Humanos de la {AREA}.")
+    if st.button("Salir", key=f"salir_{emp.n}"):
+        volver_al_inicio()
 
 
 def mostrar_solicitud(emp, store):
@@ -248,7 +302,12 @@ def main():
 
     store = almacen()
 
-    rfc = st.text_input("RFC (con homoclave)", max_chars=13,
+    _limpiar_si_toca()
+    mensaje = st.session_state.pop("_mensaje", None)
+    if mensaje:
+        st.success(mensaje)
+
+    rfc = st.text_input("RFC (con homoclave)", max_chars=13, key="rfc",
                         placeholder="AAAA000000AAA").strip().upper()
     if not rfc:
         st.stop()

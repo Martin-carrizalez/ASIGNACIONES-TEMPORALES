@@ -12,13 +12,15 @@ Lee los datos del Google Sheet (variables SHEET_ID y GOOGLE_SERVICE_ACCOUNT_JSON
 
 import io
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Pt
+from docx.shared import Pt, RGBColor
 from docx.text.paragraph import Paragraph
 
 import datos
@@ -27,10 +29,13 @@ BASE = Path(__file__).parent
 PLANTILLA = BASE / "templates" / "FORMATO_ASIGNACION_TEMPORAL_2026.docx"
 SALIDA = BASE / "salida"
 
-# Fecha del tramite. Vacia = se pone a mano al firmar.
-# Importa por la nota del formato: dentro de los primeros cinco dias habiles del
-# mes surte efectos el dia 16; despues, el primero del mes siguiente.
-FECHA = ""
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+         "septiembre", "octubre", "noviembre", "diciembre"]
+
+def fecha_larga(d=None) -> str:
+    """'12 de noviembre de 2026'. Sin argumento, la fecha de hoy en hora de Mexico."""
+    d = d or datetime.now(ZoneInfo("America/Mexico_City")).date()
+    return f"{d.day} de {MESES[d.month - 1]} de {d.year}"
 
 FUENTE = "Arial"
 TAM_DATO = Pt(9)
@@ -54,93 +59,80 @@ def anexar(celda, texto):
     """Agrega el valor despues de una etiqueta existente: 'Nombre:' -> 'Nombre: X'."""
     _nuevo_run(celda.paragraphs[0], " " + texto)
 
-def parrafo_antes(parrafo, texto, tam=TAM_PIE, bold=True):
-    """Inserta una linea centrada arriba del pie de firma, sin tocar el pie."""
+def reemplazar_texto(parrafo, texto, tam=TAM_PIE, bold=True):
+    """Cambia todo el texto de un parrafo conservando su alineacion."""
+    for r in list(parrafo.runs):
+        r._element.getparent().remove(r._element)
+    _nuevo_run(parrafo, texto, tam=tam, bold=bold)
+
+def parrafo_despues(parrafo, texto, tam=TAM_PIE, bold=True):
+    """Agrega una linea centrada debajo de un parrafo."""
     nuevo = OxmlElement("w:p")
-    parrafo._p.addprevious(nuevo)
+    parrafo._p.addnext(nuevo)
     np = Paragraph(nuevo, parrafo._parent)
     np.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _nuevo_run(np, texto, tam=tam, bold=bold)
 
-MARCA = " (X)"
-
-def _marcar_opcion(elementos_t, opcion: str) -> int:
-    """Escribe ' (X)' junto a la palabra de la opcion elegida.
-
-    Las casillas redondeadas del formato son figuras con cuadro de texto. Escribir
-    la X dentro de la figura NO sirve: las que estan ancladas en una celda de tabla
-    no imprimen su texto en LibreOffice ni en varios visores, y el formato sale sin
-    marcar sin que nadie se de cuenta. Por eso la marca va en el texto mismo, que
-    imprime igual en cualquier visor. Se consumen espacios a la derecha para no
-    recorrer el resto del renglon."""
-    marcados = 0
-    for t in elementos_t:
-        texto = t.text or ""
-        if opcion not in texto or MARCA in texto:
+def poner_fecha(doc, fecha: str):
+    """Sustituye la raya de 'Fecha: ______' por la fecha escrita."""
+    for p in doc.paragraphs:
+        if "Fecha:" not in p.text:
             continue
-        i = texto.index(opcion) + len(opcion)
-        cola = texto[i:]
-        sobrantes = len(cola) - len(cola.lstrip(" "))
-        recorte = min(sobrantes, len(MARCA))
-        t.text = texto[:i] + MARCA + cola[recorte:]
-        t.set(qn("xml:space"), "preserve")
-        marcados += 1
-    return marcados
+        rayas = [r for r in p.runs if "_" in r.text]
+        if not rayas:
+            raise RuntimeError("No encontre la raya de la fecha en la plantilla.")
+        rayas[0].text = fecha
+        for r in rayas[1:]:
+            r._element.getparent().remove(r._element)
+        return
+    raise RuntimeError("No encontre el renglon 'Fecha:' en la plantilla.")
 
-def _textos(nodo):
-    return [t for t in nodo.iter(qn("w:t"))]
+def _casillas(doc) -> dict:
+    """Las cuatro casillas redondeadas, por nombre. Son figuras con cuadro de texto
+    y aparecen en la plantilla en este orden: la figura 0 es el letrero 'Datos del
+    personal' y la 5 el de 'Descripcion del movimiento'."""
+    figuras = [a for a in doc.element.body.iter() if a.tag.endswith("}anchor")]
+    if len(figuras) != 6:
+        raise RuntimeError(
+            f"Se esperaban 6 figuras en la plantilla y hay {len(figuras)}. "
+            "Cambio la plantilla: hay que volver a mapear las casillas.")
+    return dict(zip(("estatal", "federal", "temporal", "definitivo"), figuras[1:5]))
 
-def marcar_casillas(doc, celda_sostenimiento, es_estatal):
-    """Marca Sostenimiento (Estatal/Federal) y Descripcion del movimiento (Temporal).
-    La fila de 'Descripcion del movimiento' es una figura y Word la guarda dos veces,
-    version moderna (mc:Choice) y respaldo VML (mc:Fallback): hay que marcar las dos
-    o segun el visor se ve sin marcar."""
-    opcion = "Estatal" if es_estatal else "Federal"
-    if not _marcar_opcion(_textos(celda_sostenimiento._tc), opcion):
-        raise RuntimeError(f"No se encontro la opcion {opcion!r} en la fila de sostenimiento.")
+def _cruz(figura):
+    """Escribe la X DENTRO de la casilla.
 
-    cajas = [tb for tb in doc.element.body.iter()
-             if tb.tag.endswith("txbxContent") and "Temporal" in "".join(tb.itertext())]
-    if not cajas:
-        raise RuntimeError("No se encontro la fila 'Descripcion del movimiento' en la plantilla.")
-    for caja in cajas:           # todas son asignacion temporal, nunca definitivo
-        _marcar_opcion(_textos(caja), "Temporal")
+    Word guarda cada figura dos veces (mc:Choice moderno y mc:Fallback VML): se
+    marca en las dos. El color negro va explicito porque la casilla 'Estatal' trae
+    en su estilo letra blanca: sin esto la X se escribe pero no se ve."""
+    alterno = figura
+    while not alterno.tag.endswith("}AlternateContent"):
+        alterno = alterno.getparent()
+    for caja in [t for t in alterno.iter() if t.tag.endswith("txbxContent")]:
+        p = caja.find(qn("w:p"))
+        par = Paragraph(p, None)
+        par.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        par.paragraph_format.space_after = Pt(0)
+        r = _nuevo_run(par, "X", tam=Pt(10), bold=True)
+        r.font.color.rgb = RGBColor(0, 0, 0)
 
-def recuperar_renglones(doc, cuantos):
-    """Imprimir los nombres abajo de cada firma empuja el documento y el bloque de
-    firmas se encima con el pie de pagina. Se quitan renglones en blanco del hueco
-    muerto que hay entre el bloque del solicitante y 'Libera el recurso', para no
-    comerse el espacio donde la gente realmente firma."""
-    cuerpo = list(doc.element.body.iterchildren())
-    tablas = [i for i, c in enumerate(cuerpo) if c.tag == qn("w:tbl")]
-    quitados = 0
-    for c in cuerpo[tablas[2] + 1:]:
-        if quitados >= cuantos or c.tag != qn("w:p"):
-            break
-        if not "".join(c.itertext()).strip():
-            c.getparent().remove(c)
-            quitados += 1
-    return quitados
+def marcar_casillas(doc, es_estatal):
+    casillas = _casillas(doc)
+    _cruz(casillas["estatal" if es_estatal else "federal"])
+    _cruz(casillas["temporal"])      # todas son asignacion temporal
 
 # ---------------------------------------------------------------- generacion
 
-def generar(emp, destino):
+def generar(emp, destino, fecha=None):
+    """destino: ruta en disco o buffer en memoria. fecha: texto que va en 'Fecha:';
+    si no se da, la de hoy."""
     doc = Document(str(PLANTILLA))
-
-    if FECHA:
-        for p in doc.paragraphs:
-            if "Fecha:" in p.text:
-                for r in p.runs:
-                    if "_" in r.text:
-                        r.text = f"  {FECHA}"
-                        break
-                break
+    poner_fecha(doc, fecha or fecha_larga())
 
     t_datos, t_centros, t_solicitante, t_firmas = doc.tables[:4]
 
     escribir(t_datos.rows[0].cells[1], emp.nombre)
     escribir(t_datos.rows[1].cells[1], emp.rfc)
-    marcar_casillas(doc, t_datos.rows[2].cells[1], emp.es_estatal)
+    marcar_casillas(doc, emp.es_estatal)
 
     # Renglones 3 a 6: hasta 4 claves presupuestales.
     for i, fila in enumerate(range(3, 3 + datos.MAX_CLAVES)):
@@ -154,25 +146,28 @@ def generar(emp, destino):
     anexar(t_centros.rows[1].cells[1], emp.ct_solicitado_nombre)
     anexar(t_centros.rows[2].cells[1], emp.ct_solicitado_clave)
 
-    # Pies de firma. Quien libera es el titular del centro actual y quien recibe
-    # el del solicitado: sirve igual para los que entran a la DFC y los que salen.
-    parrafo_antes(t_solicitante.rows[0].cells[0].paragraphs[0], emp.nombre)
-    agregados = 1
+    # Pies de firma. Las leyendas genericas del formato ("Nombre y firma de la
+    # persona solicitante", "Nombre, puesto y firma de...") se SUSTITUYEN por el
+    # nombre real; no se dejan las dos cosas. Nombre y cargo van con el mismo
+    # formato: mayusculas y negritas. La leyenda "Autorizo el movimiento..." del
+    # solicitante se conserva porque es su declaracion.
+    reemplazar_texto(t_solicitante.rows[0].cells[0].paragraphs[0], emp.nombre.upper())
 
+    # Quien libera es el titular del centro actual y quien recibe el del solicitado:
+    # sirve igual para los que entran a la DFC y los que salen.
     for celda, d in zip(t_firmas.rows[0].cells, (emp.libera, emp.recibe)):
-        if d.titular:
-            parrafo_antes(celda.paragraphs[0], d.cargo, bold=False)
-            parrafo_antes(celda.paragraphs[0], d.titular)
-    agregados += 2      # libera y recibe van lado a lado: suman alto una sola vez
+        if d.titular:                 # sin titular se deja la leyenda del formato
+            pie = celda.paragraphs[0]
+            reemplazar_texto(pie, d.titular.upper())
+            parrafo_despues(pie, d.cargo.upper())
 
-    recuperar_renglones(doc, agregados)
-    doc.save(destino)            # destino: ruta en disco o un buffer en memoria
+    doc.save(destino)
 
 
-def generar_bytes(emp) -> bytes:
+def generar_bytes(emp, fecha=None) -> bytes:
     """El mismo formato, pero en memoria: lo usa la app para el boton de descarga."""
     buf = io.BytesIO()
-    generar(emp, buf)
+    generar(emp, buf, fecha)
     return buf.getvalue()
 
 def nombre_archivo(emp) -> str:

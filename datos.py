@@ -82,6 +82,14 @@ PREFIJOS = sorted([
     "DELEGACION REGIONAL DE", "DELEGACION DE", "DELEGACION",
     "SUBDELEGACION REGIONAL DE LA", "SUBDELEGACION REGIONAL DE", "SUBDELEGACION DE",
     "AREA DE", "COORDINACION DE", "JEFATURA DE", "SUPERVISION DE",
+    # Supervisiones y subdelegaciones: el centro dice "SUPERVISIÓN DE..." o
+    # "SUBDELEGACIÓN REGIONAL DE LA..." y el cargo "Supervisora de..." o
+    # "Subdelegado Regional de la...", con o sin "Encargado del Despacho de la".
+    "SUPERVISOR DE", "SUPERVISORA DE",
+    "ENCARGADO DEL DESPACHO DE LA SUPERVISION DE", "ENCARGADA DEL DESPACHO DE LA SUPERVISION DE",
+    "SUBDELEGADO REGIONAL DE LA", "SUBDELEGADA REGIONAL DE LA",
+    "ENCARGADO DEL DESPACHO DE LA SUBDELEGACION REGIONAL DE LA",
+    "ENCARGADA DEL DESPACHO DE LA SUBDELEGACION REGIONAL DE LA",
 ], key=len, reverse=True)
 
 def nucleo(nombre) -> str:
@@ -100,14 +108,27 @@ class Director:
     cargo: str = ""
     estado: str = "falta"        # ok | aproximado | falta
 
+# Columna opcional del directorio con la clave del centro de trabajo (CCT).
+# Es solo respaldo: se usa cuando el cargo no se parece al nombre del centro,
+# por ejemplo el centro "Subdelegacion Regional ... de Mascota" y el cargo
+# "Subdelegado Costa Sierra Occidental". Si el nombre cruza, la clave no se usa.
+COLUMNAS_CLAVE = ("clave_ct", "cct", "clave", "clave del centro de trabajo")
+_POR_CLAVE = "CCT:"          # prefijo de las entradas del indice que van por clave
+
+
 def directorio_desde_filas(filas) -> dict:
-    """filas: lista de dicts con las columnas dependencia_cargo y titular."""
+    """filas: lista de dicts con dependencia_cargo, titular y, opcional, clave_ct.
+    Cada autoridad se indexa por su nombre de cargo y, si trae clave, por clave."""
     idx = {}
     for f in filas:
         cargo = limpio(f.get("dependencia_cargo"))
         titular = limpio(f.get("titular"))
-        if cargo and titular:
-            idx[nucleo(cargo)] = (titular, cargo)
+        if not (cargo and titular):
+            continue
+        idx[nucleo(cargo)] = (titular, cargo)
+        clave = next((limpio(f.get(c)) for c in COLUMNAS_CLAVE if limpio(f.get(c))), "")
+        if clave:
+            idx[_POR_CLAVE + clave.upper()] = (titular, cargo)
     return idx
 
 def directorio_filas(valores) -> list:
@@ -121,13 +142,20 @@ def directorio_filas(valores) -> list:
         f"En la pestaña '{HOJA_DIRECTORIO}' no encontré los encabezados "
         "dependencia_cargo y titular.")
 
-def resolver_director(centro_nombre, idx) -> Director:
+def resolver_director(centro_nombre, idx, centro_clave="") -> Director:
+    """Primero por el nombre del centro. Solo si no lo encuentra, por la clave.
+    El nombre va primero porque una direccion tiene dos CCT (estatal y federal):
+    por nombre las dos caen en la misma autoridad sin capturar claves."""
     k = nucleo(centro_nombre)
+    if k and k in idx:
+        return Director(*idx[k], "ok")
+    por_clave = idx.get(_POR_CLAVE + limpio(centro_clave).upper()) if centro_clave else None
+    if por_clave:
+        return Director(*por_clave, "ok")
     if not k:
         return Director()
-    if k in idx:
-        return Director(*idx[k], "ok")
-    cerca = difflib.get_close_matches(k, list(idx), n=1, cutoff=0.86)
+    nombres = [x for x in idx if not x.startswith(_POR_CLAVE)]
+    cerca = difflib.get_close_matches(k, nombres, n=1, cutoff=0.86)
     if cerca:
         return Director(*idx[cerca[0]], "aproximado")
     return Director()
@@ -267,8 +295,8 @@ def con_directores(empleados, idx) -> list:
     """Quien libera es el titular del centro ACTUAL y quien recibe el del SOLICITADO.
     Sirve igual para los que entran a la DFC (PEDIR) y los que salen (PRESTADO)."""
     for e in empleados:
-        e.libera = resolver_director(e.ct_actual_nombre, idx)
-        e.recibe = resolver_director(e.ct_solicitado_nombre, idx)
+        e.libera = resolver_director(e.ct_actual_nombre, idx, e.ct_actual_clave)
+        e.recibe = resolver_director(e.ct_solicitado_nombre, idx, e.ct_solicitado_clave)
     return empleados
 
 

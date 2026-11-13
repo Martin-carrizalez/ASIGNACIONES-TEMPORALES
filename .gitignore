@@ -1,0 +1,4 @@
+.streamlit/secrets.toml
+credenciales.json
+salida/
+__pycache__/

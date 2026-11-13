@@ -11,6 +11,7 @@ Lee los datos del Google Sheet (variables SHEET_ID y GOOGLE_SERVICE_ACCOUNT_JSON
 """
 
 import io
+import math
 import secrets
 import shutil
 import subprocess
@@ -52,12 +53,24 @@ def _nuevo_run(parrafo, texto, tam=TAM_DATO, bold=False):
     r.font.name, r.font.size, r.bold = FUENTE, tam, bold
     return r
 
-def escribir(celda, texto, bold=False):
+def escribir(celda, texto, bold=False, tam=TAM_DATO):
     """Escribe en una celda vacia de la plantilla."""
     p = celda.paragraphs[0]
     for r in list(p.runs):
         r._element.getparent().remove(r._element)
-    _nuevo_run(p, texto, bold=bold)
+    _nuevo_run(p, texto, tam=tam, bold=bold)
+
+
+def renglones_de_claves(claves):
+    """Reparte las claves en los 4 renglones del formato.
+    Hasta 4: una por renglon. De 5 a 8: dos por renglon. De 9 a 12: tres por
+    renglon, separadas por coma. Tres claves a 9 pt casi llenan la celda, por eso
+    en ese caso se bajan a 8 pt para que ningun renglon se parta en dos."""
+    por_renglon = max(1, math.ceil(len(claves) / datos.RENGLONES_CLAVES))
+    renglones = [", ".join(claves[i:i + por_renglon])
+                 for i in range(0, len(claves), por_renglon)]
+    tam = TAM_DATO if por_renglon <= 2 else Pt(8)
+    return renglones, tam
 
 def anexar(celda, texto):
     """Agrega el valor despues de una etiqueta existente: 'Nombre:' -> 'Nombre: X'."""
@@ -189,9 +202,10 @@ def generar(emp, destino, fecha=None):
     escribir(t_datos.rows[1].cells[1], emp.rfc)
     marcar_casillas(doc, emp.es_estatal)
 
-    # Renglones 3 a 6: hasta 4 claves presupuestales.
-    for i, fila in enumerate(range(3, 3 + datos.MAX_CLAVES)):
-        escribir(t_datos.rows[fila].cells[1], emp.claves[i] if i < len(emp.claves) else "")
+    # Renglones 3 a 6 de la tabla: claves presupuestales.
+    renglones, tam = renglones_de_claves(emp.claves)
+    for i, fila in enumerate(range(3, 3 + datos.RENGLONES_CLAVES)):
+        escribir(t_datos.rows[fila].cells[1], renglones[i] if i < len(renglones) else "", tam=tam)
 
     escribir(t_datos.rows[7].cells[1], emp.correo)
     escribir(t_datos.rows[8].cells[1], emp.telefono)

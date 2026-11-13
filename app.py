@@ -22,7 +22,7 @@ import datos
 import generar
 import respuestas
 
-LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.png"
+LOGO = Path(__file__).parent / "assets" / "logo_rhdfc.jpg"
 TITULO = "Asignación temporal"
 SUBTITULO = "Validación de datos"
 AREA = "Dirección de Formación Continua"
@@ -85,6 +85,12 @@ def cargar():
 
 def almacen():
     return respuestas.Almacen(libro=libro())
+
+
+def _md(texto) -> str:
+    # Los textos del Sheet van en markdown: se neutralizan los caracteres que
+    # Streamlit interpretaria como formato.
+    return "".join("\\" + c if c in "\\`*_[]<>#|" else c for c in str(texto))
 
 
 def _e(valor) -> str:
@@ -190,9 +196,14 @@ def boton_descarga(emp, nombre, correo, telefono, fecha_hora):
     final = dataclasses.replace(emp, nombre=nombre.strip() or emp.nombre,
                                 correo=correo.strip() or emp.correo,
                                 telefono=telefono.strip() or emp.telefono)
-    if final.problemas():
-        st.info("Tu formato todavía tiene un dato pendiente de completar. "
-                f"Recursos Humanos de la {AREA} te lo entrega en cuanto esté listo.")
+    pendientes = final.problemas()
+    if pendientes:
+        # Se dice exactamente que falta: a la persona le sirve para entender por
+        # que no le sale el formato, y a RH para saber que completar.
+        st.warning("Tu formato todavía no se puede generar porque falta completar:\n\n"
+                   + "\n".join(f"- {_md(p)}" for p in pendientes)
+                   + f"\n\nRecursos Humanos de la {AREA} lo completa y te avisa. "
+                   "Cuando esté listo, entra de nuevo con tu RFC para descargarlo.")
         return
     fecha = fecha_del_formato(fecha_hora)
     try:

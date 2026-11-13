@@ -19,8 +19,12 @@ ALCANCE = ["https://www.googleapis.com/auth/spreadsheets"]
 HOJA_EMPLEADOS = "De interes"
 HOJA_DIRECTORIO = "directorio"
 
-# La plantilla solo tiene 4 renglones para claves presupuestales.
-MAX_CLAVES = 4
+# La plantilla tiene 4 renglones para claves presupuestales. Con mas de 4 se
+# ponen varias por renglon separadas por coma: 2 por renglon (hasta 8 claves)
+# o 3 por renglon (hasta 12). Mas de 12 ya no cabe.
+RENGLONES_CLAVES = 4
+MAX_POR_RENGLON = 3
+MAX_CLAVES = RENGLONES_CLAVES * MAX_POR_RENGLON
 
 
 # ---------------------------------------------------------------- conexion
@@ -166,7 +170,8 @@ class Empleado:
         if not self.claves:
             p.append("sin clave presupuestal")
         if len(self.claves) > MAX_CLAVES:
-            p.append(f"{len(self.claves)} claves y el formato solo tiene {MAX_CLAVES}")
+            p.append(f"tiene {len(self.claves)} claves presupuestales y en el formato "
+                     f"caben máximo {MAX_CLAVES}")
         if self.libera.estado != "ok":
             p.append(f"sin titular que libere ({self.ct_actual_nombre or 'sin centro'})")
         if self.recibe.estado != "ok":
